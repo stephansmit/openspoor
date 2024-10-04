@@ -3,6 +3,8 @@ import geopandas as gpd
 from loguru import logger
 from functools import cache
 
+from shapely import LineString, Point
+
 from openspoor.utils.common import read_config
 from openspoor.mapservices import FeatureServerOverview
 
@@ -33,6 +35,20 @@ class TransformerCoordinatesToSpoor:
     def _get_spoortak_met_geokm(self):
         return FeatureServerOverview().search_for('Spoortakdeel met geocode kilometrering') \
             .load_data(return_m=True)
+
+    @staticmethod
+    def _set_geocode_km_to_geometry(line_geometry: LineString,
+                                    start_km: float, end_km: float):
+        """Sets the geocode kilometrering to the third dimension of the geometry of the line"""
+        total_length = line_geometry.length
+        coords_3d = []
+        coords_3d.append((line_geometry.coords[0][0], line_geometry.coords[0][1], start_km))
+        for (x, y) in line_geometry.coords[1:-1]:
+            distance = line_geometry.project(Point(x, y))
+            km_value = start_km + (end_km - start_km) * (distance / total_length)
+            coords_3d.append((x, y, km_value))
+        coords_3d.append((line_geometry.coords[-1][0], line_geometry.coords[-1][1], end_km))
+        return LineString(coords_3d)
 
     @staticmethod
     def _determine_geocode_km(gdf_lines, gdf_points):
@@ -70,6 +86,12 @@ class TransformerCoordinatesToSpoor:
 
         points_geocodes = (
             self.stgk.loc[close_geocodes.index]
+            .assign(geometry=lambda d: d.apply(
+                lambda row: self._set_geocode_km_to_geometry(
+                    row.geometry, row.KM_GEOCODE_VAN, row.KM_GEOCODE_TOT) 
+                    if (hasattr(row.geometry, 'coords') and 
+                        (len(row.geometry.coords[0]) == 2)) else row.geometry, 
+                    axis=1))
             .set_index(close_geocodes['index_right'])  # Sample only the list of matching hits
             .assign(geocode_kilometrering=lambda d: self._determine_geocode_km(d, gdf_points))
             .drop(['geometry'], axis=1)
@@ -83,7 +105,7 @@ class TransformerCoordinatesToSpoor:
                             (d.geocode_kilometrering <= d[['KM_GEOCODE_VAN', 'KM_GEOCODE_TOT']].max(axis=1) + 0.0012))]
             .assign(geocode_kilometrering=lambda d: d.groupby(  # This ensures a unique geocode within every segment
                 [d.geometry.astype(str),
-                 'GEOCODE', 'SUBCODE', 'NAAM_LANG'])['geocode_kilometrering']
+                 'GEOCODE', 'NAAM_LANG'])['geocode_kilometrering']
                     .transform(np.mean))
             .reset_index()  # Below makes sure every original point is projected, even if the data contained duplicates
             .drop_duplicates()

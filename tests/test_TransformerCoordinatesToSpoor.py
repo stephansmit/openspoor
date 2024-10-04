@@ -19,6 +19,18 @@ def lines_gdf():
                             geometry=[LineString([(0, 0, 10), (10, 10, 20), (20, 20, 50)]),
                                       LineString([(30, 0, 40), (20, 10, 10), (10, 20, 0)])], crs='EPSG:28992')
 
+@pytest.fixture
+def lines_gdf_wo_z():
+    return gpd.GeoDataFrame({'linename': ['D-A-C-E', 'F-B-C-G'],
+                             'GEOCODE': ['DE', 'FG'],
+                             'SUBCODE': ['1', '1'],
+                             'NAAM_LANG': ['DtoE', 'FtoG'],
+                             'KM_GEOCODE_VAN': [10, 40],
+                             'KM_GEOCODE_TOT': [50, 0]},
+                            geometry=[LineString([(0, 0), (10, 10), (20, 20)]),
+                                      LineString([(30, 0), (20, 10), (10, 20)])], crs='EPSG:28992')
+
+
 
 def test_determine_geocode_km(points_gdf, lines_gdf):
     point_index = [0, 1, 2, 2]
@@ -74,3 +86,32 @@ def test_transform_far_points(monkeypatch, far_points_gdf, lines_gdf):
     for col in ['KM_GEOCODE_VAN', 'KM_GEOCODE_TOT', 'geocode_kilometrering']:
         expected_out[col] = [np.nan] * 2
     pd.testing.assert_frame_equal(out, expected_out)
+
+
+def test_determine_geocode_km_2d(points_gdf, lines_gdf_wo_z):
+    point_index = [0, 1, 2, 2]
+
+    lines_gdf_wo_z = pd.concat([lines_gdf_wo_z] * 2)
+    lines_gdf_wo_z.index = point_index
+    lines_gdf = lines_gdf_wo_z.copy()
+    lines_gdf['geometry'] = lines_gdf_wo_z.apply(lambda x: TransformerCoordinatesToSpoor._set_geocode_km_to_geometry(
+        x.geometry, x.KM_GEOCODE_VAN, x.KM_GEOCODE_TOT), axis=1
+    )
+
+    out = TransformerCoordinatesToSpoor._determine_geocode_km(lines_gdf, points_gdf)
+    expected_values = pd.Series(index=point_index, data=[34.0, 16.0, 40.0, 10.0])
+    pd.testing.assert_series_equal(out, expected_values)
+
+def test_issue_fix():
+    df = pd.DataFrame({
+        'gpsLat': [52.164124, 52.414185, 52.350055, 52.361899],
+        'gpsLong': [4.991159, 5.355776, 6.566841, 5.178191]
+    })
+    gdf = gpd.GeoDataFrame(df,
+                            geometry=gpd.points_from_xy(df['gpsLong'], df['gpsLat']),
+                            crs="WGS84")
+    
+    coordinates_transformer = TransformerCoordinatesToSpoor(buffer_distance = 5)
+    
+    xy_extended_case_gdf = coordinates_transformer.transform(gdf)
+    assert xy_extended_case_gdf.shape[0] == 6
